@@ -4,6 +4,7 @@
 
 #include "Luau/Variant.h"
 #include "Luau/VecDeque.h"
+// #include "Luau/TypeFunctionRuntime.h"
 
 #include <atomic>
 #include <condition_variable>

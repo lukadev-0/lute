@@ -16,3 +16,16 @@ print("Module return type\n", moduleTypeString)
 --         [string]: string
 --     }
 -- }
+
+-- type function id(t: type): type
+--     local result = types.newfunction(foo, bar, baz)
+--     result:setdocumentation("this is a different comment")
+--     return result
+-- end
+
+-- type functionType = typeof(
+--     -- this is a doc comment
+--     function() end
+-- )
+
+-- type foo = id<functionType>

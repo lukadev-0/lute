@@ -13,7 +13,11 @@
 #include "Luau/ParseOptions.h"
 #include "Luau/Parser.h"
 #include "Luau/ParseResult.h"
+#include "Luau/Normalize.h"
 #include "Luau/ToString.h"
+#include "Luau/TypeFunctionRuntime.h"
+#include "Luau/TypeFunctionRuntimeBuilder.h"
+#include "Luau/UnifierSharedState.h"
 
 #include "lua.h"
 #include "lualib.h"
@@ -2846,6 +2850,22 @@ int load_luau(lua_State* L)
     return 1;
 }
 
+// constexpr int kTypeUserdataTag = 42;
+
+Luau::TypeFunctionRuntime *runtime = new Luau::TypeFunctionRuntime(Luau::NotNull{new Luau::InternalErrorReporter()}, Luau::NotNull{new Luau::TypeCheckLimits()});
+
+void pushTypeVariant(lua_State* L, Luau::TypeFunctionTypeVariant type)
+{
+    Luau::TypeFunctionType* tft = nullptr;
+    tft = static_cast<Luau::TypeFunctionType*>(lua_newuserdatatagged(L, sizeof(Luau::TypeFunctionType), 42)); // kTypeTag
+
+    // tft->type = type;
+    new (tft) Luau::TypeFunctionType{type};
+
+    luaL_getmetatable(L, "type");
+    lua_setmetatable(L, -2);
+}
+
 int typeofmodule_luau(lua_State* L)
 {
     std::string modulePath = luaL_checkstring(L, 1);
@@ -2868,16 +2888,89 @@ int typeofmodule_luau(lua_State* L)
         return 1;
     }
 
-    // For now, we return a string representation of the module's type, but we will expand it to some Luau data structure representation of Type
-    // (similar to the AST types) in a subsequent PR.
-    Luau::ToStringOptions opts;
-    opts.exhaustive = true;
-    opts.useLineBreaks = true;
-    opts.functionTypeArguments = true;
-    opts.scope = modulePtr->getModuleScope();
+    Luau::TypeArena& arena = frontend.globals.globalTypes;
+    Luau::NotNull<Luau::BuiltinTypes> builtins = frontend.builtinTypes;
+    Luau::ScopePtr scope = modulePtr->getModuleScope();
 
-    std::string moduleTypeStr = Luau::toString(modulePtr->returnType, opts);
-    lua_pushlstring(L, moduleTypeStr.c_str(), moduleTypeStr.length());
+    // auto runtimectx = Luau::getTypeFunctionRuntime(L);
+    auto runtimectx = runtime;
+    //lua_setthreaddata(lua_mainthread(L), runtimectx);
+
+    Luau::UnifierSharedState unifierState(runtimectx->ice);
+    Luau::Normalizer normalizer{&arena, builtins, Luau::NotNull{&unifierState}, Luau::SolverMode::New};
+
+    Luau::TypeFunctionContext ctx{
+        Luau::NotNull{&arena},
+        builtins,
+        Luau::NotNull<Luau::Scope>{scope.get()},
+        Luau::NotNull{&normalizer},
+        Luau::NotNull{runtimectx},
+        Luau::NotNull{runtimectx->ice},
+        Luau::NotNull{runtimectx->limits}
+    };
+
+    Luau::TypeFunctionRuntimeBuilderState rtBuilder{Luau::NotNull{&ctx}};
+    runtimectx->runtimeBuilder = Luau::NotNull{&rtBuilder};
+
+    Luau::TypeFunctionTypePackId returnTypePack = Luau::serialize(modulePtr->returnType, runtimectx->runtimeBuilder);
+    
+    // pushTypePack(L, returnTypePack);
+    // use lua_newuserdatatagged, essentially make my own pushTypePack
+    // don't need kTypePackTag because it's just a table of kTypeTag !
+    if (auto tftp = Luau::get<Luau::TypeFunctionTypePack>(returnTypePack))
+    {
+        lua_createtable(L, 0, 2);
+
+        if (!tftp->head.empty())
+        {
+            lua_createtable(L, int(tftp->head.size()), 0);
+            int pos = 1;
+
+            for (auto el : tftp->head)
+            {
+                // allocTypeUserData(L, el->type);
+                pushTypeVariant(L, el->type);
+                lua_rawseti(L, -2, pos++);
+            }
+
+            lua_setfield(L, -2, "head");
+        }
+
+        if (tftp->tail.has_value())
+        {
+            if (auto tfvp = Luau::get<Luau::TypeFunctionVariadicTypePack>(*tftp->tail))
+                // allocTypeUserData(L, tfvp->type->type);
+                pushTypeVariant(L, tfvp->type->type);
+            else if (auto tfgp = Luau::get<Luau::TypeFunctionGenericTypePack>(*tftp->tail))
+                // allocTypeUserData(L, Luau::TypeFunctionGenericType{tfgp->isNamed, true, tfgp->name});
+                pushTypeVariant(L, Luau::TypeFunctionGenericType{tfgp->isNamed, true, tfgp->name});
+            else
+                luaL_error(L, "unsupported type pack type");
+
+            lua_setfield(L, -2, "tail");
+        }
+    }
+    else if (auto tfvp = Luau::get<Luau::TypeFunctionVariadicTypePack>(returnTypePack))
+    {
+        lua_createtable(L, 0, 1);
+
+        // allocTypeUserData(L, tfvp->type->type);
+        pushTypeVariant(L, tfvp->type->type);
+        lua_setfield(L, -2, "tail");
+    }
+    else if (auto tfgp = Luau::get<Luau::TypeFunctionGenericTypePack>(returnTypePack))
+    {
+        lua_createtable(L, 0, 1);
+
+        // allocTypeUserData(L, Luau::TypeFunctionGenericType{tfgp->isNamed, true, tfgp->name});
+        pushTypeVariant(L, Luau::TypeFunctionGenericType{tfgp->isNamed, true, tfgp->name});
+        lua_setfield(L, -2, "tail");
+    }
+    else
+    {
+        luaL_error(L, "unsupported type pack type");
+    }
+
     return 1;
 }
 
@@ -2912,6 +3005,10 @@ static int initLuauLibrary(lua_State* L)
     lua_setreadonly(L, -1, 1);
 
     lua_pop(L, 1);
+
+    runtime->prepareState();
+    // lua_setthreaddata(lua_mainthread(L), runtime);
+    Luau::registerTypeUserData(L);
 
     return 1;
 }

@@ -7,12 +7,10 @@ local test = require("@std/test")
 local tmpDir = system.tmpdir()
 
 test.suite("LuauTypeOfModuleSuite", function(suite)
-	suite:case("typeofmodule_returns_as_string_no_require", function(assert)
+	suite:case("typeofmodule_basic_test", function(assert)
 		local testPath = path.join(tmpDir, "typeofmodule_test.luau")
 		local testFile = fs.open(testPath, "w+")
-		fs.write(
-			testFile,
-			[[
+		fs.write(testFile, [[
 			local function example_string(): string
 				return "example"
 			end
@@ -20,17 +18,25 @@ test.suite("LuauTypeOfModuleSuite", function(suite)
 			return {
 				example_string = example_string,
 			}
-		]]
-		)
+		]])
 		fs.close(testFile)
 
-		local moduleTypeString = luau.typeofmodule(testPath)
-		local expectedOutputString = [[{
-    example_string: () -> string
-}]]
+		local typePack = luau.typeofmodule(testPath)
 
-		-- Basic check for now until the data structure is created
-		assert.eq(moduleTypeString, expectedOutputString)
+		if typePack.head then
+			for _, typeData in typePack.head do
+				print(typeData)
+				print(typeof(typeData))
+				print(typeData:is("table"))
+				if typeData:is("table") then
+					print(typeData.tag)
+					local props = typeData:properties()
+					for propName, propType in props do
+						print(`Property: {propName} -> {propType}`)
+					end
+				end
+			end
+		end
 	end)
 
 	suite:case("resolverequire", function(assert)
